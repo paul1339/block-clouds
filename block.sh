@@ -16,17 +16,20 @@ fi
 # Check if we are flushing or initializing
 if [ ${args[0]} == "init" ]; then
     # Initialize the rules
-    rm -rf blacklist
 
     for ASN in $ASNS; do
-        echo "Fetching $ASN"
-        curl -s "https://bgpview.io/asn/$ASN#prefixes-v4" | grep -oE "([0-9]{1,3}[\.]){3}[0-9]{1,3}/[0-9]{1,2}" >> blacklist
+        echo "Fetching AS$ASN"
+        curl -x "socks5://usr:pwd@1.1.1.1:1080" -s "https://bgpview.io/asn/$ASN#prefixes-v4" | grep -oE "([0-9]{1,3}[\.]){3}[0-9]{1,3}/[0-9]{1,2}" | anew -q blacklist >> blacklist
+        sleep 1
     done
 
+    # Sort the list
+    sort -u blacklist -o blacklist
+
+    iptables -F
     iptables -P INPUT ACCEPT
     iptables -P OUTPUT ACCEPT
     iptables -P FORWARD ACCEPT
-    iptables -F
 
     for IP in $(cat blacklist); do
         echo "Blocking $IP"
@@ -34,18 +37,27 @@ if [ ${args[0]} == "init" ]; then
         iptables -A OUTPUT -d $IP -j DROP
     done
 
-    #/sbin/iptables-save
+    #iptables-save
+
 elif [ ${args[0]} == "flush" ]; then
     # Flush the rules
+    iptables -F
     iptables -P INPUT ACCEPT
     iptables -P OUTPUT ACCEPT
     iptables -P FORWARD ACCEPT
-    iptables -F
+
+elif [ ${args[0]} == "check" ]; then
+    # Check the rules
+    X=$(iptables -L -n | grep DROP | wc -l)
+    echo "There are $X rules"
+
+    C=$(ping -c 1 178.79.131.141 | grep "100% packet loss" | wc -l)
+    if [ $C -eq 1 ]; then
+        echo "Blocked"
+    else
+        echo "Not blocked"
+    fi 
+
 else
     exit 1
 fi
-
-
-#cat blacklist/aggregated.lst | sort -u >> /etc/zmap/blacklist.conf
-echo "Updated /etc/zmap/blacklist.conf"
-ping -c 5 178.79.131.141
