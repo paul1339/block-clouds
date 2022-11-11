@@ -1,6 +1,7 @@
 #!/bin/bash
-# This script will block all traffic from the cloud providers
-ASNS="132203 45090 20473 14061 9009 136258 135377 15169 16509 14618 62785 7224 8987 63949 48337 23724 4808"
+# This script will block all traffic from ASNs in below list
+ASNS="132203 45090 20473 14061 9009 136258 135377 15169 16509 \
+      14618 62785 7224 8987 63949 48337 23724 4808"
 
 # Get args
 args=("$@")
@@ -8,23 +9,44 @@ args=("$@")
 numargs=$#
 
 # Check if we have the right number of args
-if [ $numargs -ne 1 ]; then
-    echo "Usage: $0 <init | flush>"
+if [ $numargs -lt 1 ]; then
+    echo "Usage: $0 <init | flush | check | ping1>"
     exit 1
 fi
+
+# Check if we have the right args
+if [ "${args[0]}" != "init" ] && [ "${args[0]}" != "flush" ] && [ "${args[0]}" != "check" ] && [ "${args[0]}" != "ping" ]; then
+    echo "Usage: $0 <init | flush | check | ping2>"
+    exit 1
+fi
+
+# Check if blacklist file exists 
+if [ ! -f /etc/iptables/blacklist ]; then
+    > $(pwd)/blacklist
+fi
+
+# Check if anew, mapcidr and iptables are installed 
+if [ ! -f /go/bin/anew ] || [ ! -f /go/bin/mapcidr ] || [ ! -f /sbin/iptables ]; then
+    echo "Please install anew, mapcidr and iptables"
+    exit 1
+fi
+
 
 # Check if we are flushing or initializing
 if [ ${args[0]} == "init" ]; then
     # Initialize the rules
+    iptables -N BLOCK
 
     for ASN in $ASNS; do
         echo "Fetching AS$ASN"
-        curl -x "socks5://usr:pwd@1.1.1.1:1080" -s "https://bgpview.io/asn/$ASN#prefixes-v4" | grep -oE "([0-9]{1,3}[\.]){3}[0-9]{1,3}/[0-9]{1,2}" | anew -q blacklist >> blacklist
-        sleep 1
+        curl -s "https://api.bgpview.io/asn/$ASN/prefixes" | jq -r '.data.ipv4_prefixes[].prefix' | grep -v null | anew -q $(pwd)/blacklist
+        sleep 0.5
     done
 
-    # Sort the list
-    sort -u blacklist -o blacklist
+    # Aggregate the blacklist cidrs
+    mv $(pwd)/blacklist $(pwd)/.blacklist_tmp
+    cat $(pwd)/.blacklist_tmp | mapcidr -silent -a | anew -q $(pwd)/blacklist
+
 
     iptables -F
     iptables -P INPUT ACCEPT
@@ -33,7 +55,7 @@ if [ ${args[0]} == "init" ]; then
 
     for IP in $(cat blacklist); do
         echo "Blocking $IP"
-        iptables -A INPUT -s $IP -j DROP
+        #iptables -A INPUT -s $IP -j DROP
         iptables -A OUTPUT -d $IP -j DROP
     done
 
@@ -51,12 +73,18 @@ elif [ ${args[0]} == "check" ]; then
     X=$(iptables -L -n | grep DROP | wc -l)
     echo "There are $X rules"
 
-    C=$(ping -c 1 178.79.131.141 | grep "100% packet loss" | wc -l)
+elif [ ${args[0]} == "ping" ]; then
+    if [ $numargs -ne 2 ]; then
+        echo "Usage: $0 ping <ip>"
+        exit 1
+    fi
+    echo "Pinging ${args[1]} ..."
+    C=$(ping -c 1 ${args[1]} | grep "100% packet loss" | wc -l)
     if [ $C -eq 1 ]; then
         echo "Blocked"
     else
         echo "Not blocked"
-    fi 
+    fi
 
 else
     exit 1
